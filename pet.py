@@ -23,6 +23,7 @@ from pydub.playback import play
 import queue
 from scipy.io import wavfile
 import time
+from ohbot import ohbot
 
 eleven_client = ElevenLabs(
     api_key=os.environ.get("ELEVEN_API_KEY")
@@ -155,7 +156,6 @@ def say(text):
     global messages
 
     if enable_squeak:
-        # Stop the sound effect because we are about to speak.
         pygame.mixer.music.stop()
 
     # Generate audio stream for the assistant's reply
@@ -177,97 +177,119 @@ def say(text):
     # Reset buffer position to the beginning
     audio_buffer.seek(0)
 
-    # Save the audio buffer to an MP3 file
-    output_filename = "pet_response.mp3"
-    with open(output_filename, "wb") as f:
-        f.write(audio_buffer.getvalue())
+    # Use timestamp for unique filename in temp directory
+    timestamp = int(time.time())
+    output_filename = os.path.join('temp', f'pet_response_{timestamp}.mp3')
+    
+    try:
+        # Save the audio buffer to an MP3 file
+        with open(output_filename, "wb") as f:
+            f.write(audio_buffer.getvalue())
 
-    print(f"Saved audio response to {output_filename}")
+        print(f"Saved audio response to {output_filename}")
 
-    # Display the talking pet while playing the audio
-    display_talking_pet(output_filename)
+        # Display the talking pet while playing the audio
+        display_talking_pet(output_filename)
 
-    messages.append({"role": "assistant", "content": text})
+        messages.append({"role": "assistant", "content": text})
 
-    if len(messages) > 12:
-        messages = [messages[0]] + messages[-10:]
+        if len(messages) > 12:
+            messages = [messages[0]] + messages[-10:]
+    finally:
+        # Clean up the audio file
+        try:
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
+        except Exception as e:
+            print(f"Error cleaning up audio file: {e}")
 
 def get_user_input_from_audio(audio_data):
-
     global talking
 
-    # Create a temporary mp3 file to save the audio and then transcribe it.
-    with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
+    # Create temp file in temp directory
+    temp_filename = os.path.join('temp', 'temp_audio.mp3')
+    try:
+        # Create the audio segment
         audio_segment = AudioSegment(
             data=np.array(audio_data).tobytes(),
             sample_width=dtype.itemsize,
             frame_rate=sampling_rate,
             channels=num_channels
         )
-        audio_segment.export(f.name, format="mp3")
-        f.seek(0)
+        # Export directly to the temp file
+        audio_segment.export(temp_filename, format="mp3")
 
-        talking = True  # Set the talking variable to True so that the lonely sound doesn't play
+        talking = True
 
-        # Print file name
-        print(f"File name: {f.name}")
-        
-        # Copy file to current directory
-        os.system(f"cp {f.name} ./audio.mp3")
+        print(f"File name: {temp_filename}")
 
         if enable_squeak:
-            # Play the sound effect
             pygame.mixer.music.play()
 
         # Transcribe audio using OpenAI API
-        audio_file = open(f.name, "rb")
-        transcript = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-        )
+        with open(temp_filename, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+            )
 
-        # Get the user input from the transcript
-        user_input = transcript.text
-
-        return user_input
+        return transcript.text
+    finally:
+        # Clean up the temporary file
+        try:
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+        except Exception as e:
+            print(f"Error cleaning up temporary file: {e}")
 
 def initialize():
-    global silence_threshold, screen, skull_closed, skull_open, pygame_initialized
-
-     # Calculate the ambient noise level and set it as the silence threshold
+    global silence_threshold
+    
+    print("Initializing Ohbot...")
+    ohbot.init()
+    
+    # Create temp directory if it doesn't exist
+    if not os.path.exists('temp'):
+        os.makedirs('temp')
+        print("Created temp directory")
+    
+    # Clean up any old temp files
+    cleanup_temp_files()
+    
+    # Center all movements initially
+    ohbot.move(ohbot.HEADTURN, 5)
+    ohbot.move(ohbot.HEADNOD, 5)
+    ohbot.move(ohbot.EYETURN, 5)
+    ohbot.move(ohbot.EYETILT, 5)
+    ohbot.move(ohbot.LIDBLINK, 0)
+    ohbot.move(ohbot.TOPLIP, 5)
+    ohbot.move(ohbot.BOTTOMLIP, 5)
+    ohbot.wait(0.5)
+    
+    # Calculate ambient noise level and set it as the silence threshold
     ambient_noise_level = calculate_ambient_noise_level()
-    silence_threshold = ambient_noise_level * ambient_noise_level_threshold_multiplier  # Adjust multiplier as needed
-
+    silence_threshold = ambient_noise_level * ambient_noise_level_threshold_multiplier
+    
     # Set silence_threshold to a minimum value
     silence_threshold = max(silence_threshold, 10.0)
-
-    # Print the silence threshold
+    
     print(f"Silence threshold: {silence_threshold}")
-
+    
     if enable_lonely_sounds:
         # Initialize the periodic lonely sound timer
         timer = threading.Timer(60, play_lonely_sound)
         timer.start()
 
-     # Initialize pygame mixer for sound effects
-    pygame.mixer.init()
-
-    if enable_squeak:
-        pygame.mixer.music.load("filler.mp3")
-
-    # Initialize Pygame
-    pygame.init()
-    screen = pygame.display.set_mode((800, 600))
-    pygame.display.set_caption("Talking Pet")
-    pygame_initialized = True
-
-    # Load skull images
-    skull_closed = pygame.image.load(settings['character_closed_mouth'])
-    skull_open = pygame.image.load(settings['character_open_mouth'])
-    
-    # Print image sizes for debugging
-    print(f"Closed mouth image size: {skull_closed.get_size()}")
-    print(f"Open mouth image size: {skull_open.get_size()}")
+def cleanup_temp_files():
+    """Clean up old temporary files"""
+    temp_dir = 'temp'
+    if os.path.exists(temp_dir):
+        for file in os.listdir(temp_dir):
+            if file.startswith('pet_response_'):
+                try:
+                    os.remove(os.path.join(temp_dir, file))
+                except Exception as e:
+                    print(f"Error removing temp file {file}: {e}")
 
 def analyze_audio_chunk(audio_chunk):
     samples = np.array(audio_chunk.get_array_of_samples())
@@ -293,8 +315,8 @@ def analyze_audio_file(audio_file):
     # Normalize the audio data
     audio_data = audio_data / np.max(np.abs(audio_data))
     
-    # Calculate energy
-    frame_length = int(sample_rate * 0.03)  # 30ms frames
+    # Calculate energy with smaller frame size for more frequent updates
+    frame_length = int(sample_rate * 0.02)  # 20ms frames
     energy = []
     for i in range(0, len(audio_data), frame_length):
         frame = audio_data[i:i+frame_length]
@@ -307,26 +329,36 @@ def analyze_audio_file(audio_file):
     return energy, len(audio_data) / sample_rate
 
 def play_and_analyze_audio(audio_file, mouth_queue):
+    print("Starting audio analysis")
     energy, duration = analyze_audio_file(audio_file)
     
-    # Play the audio file
-    pygame.mixer.init()
+    # Initialize pygame mixer if not already initialized
+    if not pygame.mixer.get_init():
+        pygame.mixer.init()
+    
     pygame.mixer.music.load(audio_file)
     pygame.mixer.music.play()
     
     # Send mouth states to the queue
     start_time = time.time()
     for e in energy:
-        mouth_open = e > 0.1  # Adjust this threshold as needed
+        mouth_open = e > 0.03  # More sensitive threshold
         mouth_queue.put(mouth_open)
-        time.sleep(0.03)  # 30ms per frame
+        print(f"Energy: {e:.2f}, Mouth open: {mouth_open}")
         
-        # Check if we've reached the end of the audio
-        if time.time() - start_time > duration:
+        # Wait for precise timing
+        elapsed = time.time() - start_time
+        target_time = elapsed + 0.02
+        while time.time() < target_time:
+            time.sleep(0.001)
+        
+        # Check if audio finished playing
+        if not pygame.mixer.music.get_busy():
             break
     
     # Signal end of audio
     mouth_queue.put(None)
+    print("Audio analysis complete")
 
 def resize_image(image, window_size):
     """Resize image to fit the window while maintaining aspect ratio."""
@@ -341,102 +373,96 @@ def resize_image(image, window_size):
         new_h = int(new_w / aspect_ratio)
     return pygame.transform.smoothscale(image, (new_w, new_h))
 
-def display_talking_pet(audio_file):
-    global pygame_initialized
-    mouth_queue = queue.Queue()
-
-    # Start playing audio and analyzing in a separate thread
-    audio_thread = threading.Thread(target=play_and_analyze_audio, args=(audio_file, mouth_queue))
-    audio_thread.start()
-
-    running = True
-    mouth_open = False
-    frame_count = 0
-    fullscreen = False
-
-    # Set the initial window size
-    screen = pygame.display.set_mode((1024, 1024), pygame.RESIZABLE)
-
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-                pygame_initialized = False
-            elif event.type == pygame.VIDEORESIZE:
-                if not fullscreen:
-                    screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_f:  # Press 'f' to toggle fullscreen
-                    fullscreen = not fullscreen
-                    if fullscreen:
-                        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-                    else:
-                        screen = pygame.display.set_mode((1024, 1024), pygame.RESIZABLE)
-
-        # Set background to black
-        screen.fill((0, 0, 0))
-
-        # Update mouth state from the queue
+def random_head_movement():
+    while True:
         try:
-            mouth_state = mouth_queue.get_nowait()
-            if mouth_state is None:
-                mouth_open = False  # Close mouth when audio ends
-                running = False  # Stop the loop when we receive the end signal
+            # Random movement type (0: normal, 1: look around, 2: focused look)
+            movement_type = random.choices([0, 1, 2], weights=[0.7, 0.2, 0.1])[0]
+            
+            if movement_type == 0:  # Normal subtle movements
+                head_turn = random.uniform(4, 6)    # Subtle turn around center position
+                head_nod = random.uniform(4, 6)     # Subtle nod around center position
+                eye_turn = random.uniform(4, 6)     # Subtle eye turn
+                eye_tilt = random.uniform(4, 6)     # Subtle eye tilt
+            
+            elif movement_type == 1:  # Look around
+                # More extreme movements for "looking around" behavior
+                head_turn = random.uniform(3, 7)
+                eye_turn = head_turn + random.uniform(-1, 1)  # Eyes follow head movement
+                head_nod = random.uniform(3, 7)
+                eye_tilt = head_nod + random.uniform(-1, 1)
+            
+            else:  # Focused look at something
+                # Eyes move first, then head follows
+                eye_turn = random.uniform(2, 8)
+                eye_tilt = random.uniform(2, 8)
+                ohbot.move(ohbot.EYETURN, eye_turn, 10)
+                ohbot.move(ohbot.EYETILT, eye_tilt, 10)
+                ohbot.wait(0.2)
+                head_turn = eye_turn + random.uniform(-0.5, 0.5)
+                head_nod = eye_tilt + random.uniform(-0.5, 0.5)
+            
+            # Randomly decide if we should blink
+            should_blink = random.random() < 0.3  # 30% chance to blink
+            
+            # Execute movements
+            ohbot.move(ohbot.HEADTURN, head_turn, 2)
+            ohbot.move(ohbot.HEADNOD, head_nod, 2)
+            ohbot.move(ohbot.EYETURN, eye_turn, 3)  # Slightly faster eye movements
+            ohbot.move(ohbot.EYETILT, eye_tilt, 3)
+            
+            # If blinking, do a quick blink motion
+            if should_blink:
+                print("Blinking...")
+                ohbot.move(ohbot.LIDBLINK, 10, 10)  # Close eyes quickly
+                ohbot.wait(0.1)
+                ohbot.move(ohbot.LIDBLINK, 0, 10)   # Open eyes quickly
+            
+            # Random wait between movements
+            if movement_type == 0:
+                time.sleep(random.uniform(1, 3))
+            elif movement_type == 1:
+                time.sleep(random.uniform(0.5, 1.5))  # Shorter pauses when looking around
             else:
-                mouth_open = mouth_state
-        except queue.Empty:
-            pass  # No new mouth state, keep the current state
+                time.sleep(random.uniform(2, 4))  # Longer pauses when focused
+            
+        except Exception as e:
+            print(f"Head movement error: {e}")
+            break
 
-        # Get the appropriate skull image
-        skull_image = skull_open if mouth_open else skull_closed
+def display_talking_pet(audio_file):
+    print("Starting display_talking_pet function")
 
-        # Get the current window size
-        window_width, window_height = screen.get_size()
+    # Start the random head movement in a separate thread
+    head_movement_thread = threading.Thread(target=random_head_movement, daemon=True)
+    head_movement_thread.start()
 
-        # Calculate the scaling factor to fit the image in the window
-        image_width, image_height = skull_image.get_size()
-        scale = min(window_width / image_width, window_height / image_height)
+    # Initialize pygame mixer if not already initialized
+    if not pygame.mixer.get_init():
+        pygame.mixer.init()
+    
+    pygame.mixer.music.load(audio_file)
+    pygame.mixer.music.play()
 
-        # Calculate the new image size
-        new_width = int(image_width * scale)
-        new_height = int(image_height * scale)
-
-        # Resize the image
-        resized_image = pygame.transform.smoothscale(skull_image, (new_width, new_height))
-
-        # Calculate position to center the image
-        pos_x = (window_width - new_width) // 2
-        pos_y = (window_height - new_height) // 2
-
-        # Blit the resized image
-        screen.blit(resized_image, (pos_x, pos_y))
-
-        pygame.display.update()
-
-        frame_count += 1
+    # Simple mouth movement pattern while audio plays
+    while pygame.mixer.music.get_busy():
+        print("Opening mouth")
+        # Open mouth - move both lips
+        ohbot.move(ohbot.TOPLIP, 8)
+        ohbot.move(ohbot.BOTTOMLIP, 2)
+        ohbot.wait(0.2)
         
-    # Ensure the mouth is closed at the end
-    screen.fill((0, 0, 0))
-    
-    # Resize and center the closed mouth image
-    image_width, image_height = skull_closed.get_size()
-    window_width, window_height = screen.get_size()
-    scale = min(window_width / image_width, window_height / image_height)
-    new_width = int(image_width * scale)
-    new_height = int(image_height * scale)
-    resized_closed = pygame.transform.smoothscale(skull_closed, (new_width, new_height))
-    pos_x = (window_width - new_width) // 2
-    pos_y = (window_height - new_height) // 2
-    screen.blit(resized_closed, (pos_x, pos_y))
-    
-    pygame.display.update()
+        print("Closing mouth")
+        # Close mouth - return to neutral
+        ohbot.move(ohbot.TOPLIP, 5)
+        ohbot.move(ohbot.BOTTOMLIP, 5)
+        ohbot.wait(0.2)
 
-    # Wait for the audio thread to finish
-    audio_thread.join()
-    pygame.mixer.music.stop()
-
-    # Keep the closed mouth image displayed for a short time
-    pygame.time.wait(500)  # Wait for 500 ms
+    # Ensure mouth is closed at the end
+    print("Closing mouth - end of audio")
+    ohbot.move(ohbot.TOPLIP, 5)
+    ohbot.move(ohbot.BOTTOMLIP, 5)
+    ohbot.wait(0.1)
 
 # Global list to accumulate audio data
 audio_queue = Queue()
@@ -551,47 +577,64 @@ def capture_webcam_as_base64():
     jpg_as_text = base64.b64encode(buffer).decode('utf-8')
     return jpg_as_text
 
+def test_ohbot():
+    print("Testing Ohbot movements...")
+    ohbot.init()
+    
+    try:
+        for _ in range(3):  # Test 3 times
+            print("Opening mouth wide")
+            ohbot.move(ohbot.TOPLIP, 9)
+            ohbot.move(ohbot.BOTTOMLIP, 1)
+            ohbot.wait(1)
+            
+            print("Closing mouth")
+            ohbot.move(ohbot.TOPLIP, 5)
+            ohbot.move(ohbot.BOTTOMLIP, 5)
+            ohbot.wait(1)
+    finally:
+        ohbot.close()
+
 def main():
-    global talking, messages, stop_recording, pygame_initialized
+    global talking, messages, stop_recording
 
     initialize()
+    
+    try:
+        say(get_random_greeting())
 
-    say(get_random_greeting())
+        print("Listening...")
 
-    print("Listening...")
+        while True:
+            talking = False
 
-    # Main loop
-    while pygame_initialized:
-        talking = False  # We start off quiet
+            audio_data = listen_audio_until_silence()
 
-        # Listen for audio until we detect silence
-        audio_data = listen_audio_until_silence()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_user_input = executor.submit(get_user_input_from_audio, audio_data)
+                
+                if enable_vision:
+                    future_pet_view = executor.submit(capture_webcam_as_base64)
 
-        # Use ThreadPoolExecutor to run tasks in parallel
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_user_input = executor.submit(get_user_input_from_audio, audio_data)
-            
-            if enable_vision:
-                future_pet_view = executor.submit(capture_webcam_as_base64)
+                user_input = future_user_input.result()
+                base64_image = future_pet_view.result() if enable_vision else None
 
-            # Wait for tasks to complete
-            user_input = future_user_input.result()
-            base64_image = future_pet_view.result() if enable_vision else None
+            print(f"User: {user_input}")
 
-        print(f"User: {user_input}")
+            pet_reply = get_pet_reply(user_input, base64_image)
+            print(f"Pet: {pet_reply}")
 
-        pet_reply = get_pet_reply(user_input, base64_image)
-        print(f"Pet: {pet_reply}")
+            if pet_reply.lower() == "ignore":
+                print("Ignoring conversation...")
+                messages = messages[:-1]
+            else:
+                say(pet_reply)
 
-        # convert to lowercase and check if string is "ignore"
-        if pet_reply.lower() == "ignore":
-            print("Ignoring conversation...")
-            messages = messages[:-1]
-        else:
-            # Speak the assistant's reply
-            say(pet_reply)
-
-    pygame.quit()
+    finally:
+        ohbot.close()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        ohbot.close()
