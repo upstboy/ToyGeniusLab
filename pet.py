@@ -152,11 +152,70 @@ def get_pet_reply(user_input, base64_image=None):
         response = ollama.chat(model=model, messages=messages)
         return response['message']['content']
 
+def get_emotion_movements(text):
+    """Analyze text and return appropriate movement sequence"""
+    # Convert to lowercase for easier matching
+    text = text.lower()
+    
+    # Keywords for different emotions/responses
+    agreement_words = ['yes', 'agree', 'correct', 'right', 'absolutely', 'indeed']
+    disagreement_words = ['no', 'disagree', 'incorrect', 'wrong', "don't think so"]
+    thinking_words = ['hmm', 'well', 'let me think', 'perhaps', 'maybe']
+    excited_words = ['wow', 'amazing', 'awesome', 'excellent', 'fantastic']
+    
+    def perform_movement_sequence():
+        if any(word in text for word in agreement_words):
+            print("Performing agreement nod")
+            for _ in range(2):  # Nod twice
+                ohbot.move(ohbot.HEADNOD, 8, 5)  # Move down
+                ohbot.wait(0.2)
+                ohbot.move(ohbot.HEADNOD, 3, 5)  # Move up
+                ohbot.wait(0.2)
+        
+        elif any(word in text for word in disagreement_words):
+            print("Performing disagreement shake")
+            for _ in range(2):  # Shake twice
+                ohbot.move(ohbot.HEADTURN, 7, 5)  # Turn right
+                ohbot.wait(0.2)
+                ohbot.move(ohbot.HEADTURN, 3, 5)  # Turn left
+                ohbot.wait(0.2)
+        
+        elif any(word in text for word in thinking_words):
+            print("Performing thinking motion")
+            ohbot.move(ohbot.HEADTURN, 6, 3)  # Slight turn
+            ohbot.move(ohbot.EYETILT, 7, 3)   # Look up
+            ohbot.wait(0.5)
+            ohbot.move(ohbot.LIDBLINK, 10, 5)  # Blink slowly
+            ohbot.wait(0.3)
+        
+        elif any(word in text for word in excited_words):
+            print("Performing excited motion")
+            ohbot.move(ohbot.HEADNOD, 3, 10)  # Quick head up
+            ohbot.move(ohbot.EYETILT, 3, 10)  # Eyes wide
+            ohbot.wait(0.2)
+            ohbot.move(ohbot.LIDBLINK, 0, 10)  # Eyes wide open
+            ohbot.wait(0.3)
+        
+        # Always return to center position
+        ohbot.move(ohbot.HEADTURN, 5, 3)
+        ohbot.move(ohbot.HEADNOD, 5, 3)
+        ohbot.move(ohbot.EYETURN, 5, 3)
+        ohbot.move(ohbot.EYETILT, 5, 3)
+        ohbot.wait(0.1)
+
+    # Run the movement sequence in a separate thread to not block
+    movement_thread = threading.Thread(target=perform_movement_sequence)
+    movement_thread.start()
+    return movement_thread
+
 def say(text):
     global messages
 
     if enable_squeak:
         pygame.mixer.music.stop()
+
+    # Start emotion-based movements before speaking
+    movement_thread = get_emotion_movements(text)
 
     # Generate audio stream for the assistant's reply
     audio_stream = eleven_client.generate(
@@ -202,6 +261,9 @@ def say(text):
                 os.remove(output_filename)
         except Exception as e:
             print(f"Error cleaning up audio file: {e}")
+
+    # Wait for movement sequence to complete before continuing
+    movement_thread.join()
 
 def get_user_input_from_audio(audio_data):
     global talking
@@ -444,19 +506,27 @@ def display_talking_pet(audio_file):
     pygame.mixer.music.load(audio_file)
     pygame.mixer.music.play()
 
-    # Simple mouth movement pattern while audio plays
+    # Advanced mouth movement pattern with variability
     while pygame.mixer.music.get_busy():
+        # Randomize mouth opening amount (between 7-9 for top lip, 7-9 for bottom lip)
+        top_open = random.uniform(7, 9)
+        bottom_open = random.uniform(7, 9)
+        
         print("Opening mouth")
-        # Open mouth - move both lips
-        ohbot.move(ohbot.TOPLIP, 8)
-        ohbot.move(ohbot.BOTTOMLIP, 2)
-        ohbot.wait(0.2)
+        ohbot.move(ohbot.TOPLIP, top_open)
+        ohbot.move(ohbot.BOTTOMLIP, bottom_open)
+        
+        # Random wait time for open position (0.1-0.3 seconds)
+        ohbot.wait(random.uniform(0.1, 0.3))
         
         print("Closing mouth")
-        # Close mouth - return to neutral
-        ohbot.move(ohbot.TOPLIP, 5)
-        ohbot.move(ohbot.BOTTOMLIP, 5)
-        ohbot.wait(0.2)
+        # Vary the "closed" position slightly (4.5-5.5)
+        closed_pos = random.uniform(4.5, 5.5)
+        ohbot.move(ohbot.TOPLIP, closed_pos)
+        ohbot.move(ohbot.BOTTOMLIP, closed_pos)
+        
+        # Random wait time for closed position (0.1-0.25 seconds)
+        ohbot.wait(random.uniform(0.1, 0.25))
 
     # Ensure mouth is closed at the end
     print("Closing mouth - end of audio")
