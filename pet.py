@@ -195,7 +195,7 @@ def get_emotion_movements(text):
             ohbot.wait(0.2)
             ohbot.move(ohbot.LIDBLINK, 0, 10)  # Eyes wide open
             ohbot.wait(0.3)
-        
+
         # Always return to center position
         ohbot.move(ohbot.HEADTURN, 5, 3)
         ohbot.move(ohbot.HEADNOD, 5, 3)
